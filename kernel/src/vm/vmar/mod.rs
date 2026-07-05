@@ -13,7 +13,9 @@ use ostd::mm::Vaddr;
 
 pub use self::{
     handle::VmarHandle,
-    vmar_impls::{RssType, Vmar, map::VmarMapOffset, page_fault::PageFaultInfo},
+    vmar_impls::{
+        RemapOldMappingAction, RssType, Vmar, map::VmarMapOffset, page_fault::PageFaultInfo,
+    },
 };
 
 pub const VMAR_LOWEST_ADDR: Vaddr = 0x001_0000; // 64 KiB is the Linux configurable default
@@ -25,7 +27,7 @@ pub fn is_userspace_vaddr(vaddr: Vaddr) -> bool {
 }
 
 /// Returns whether `vaddr` and `len` specify a legal user space virtual address range.
-fn is_userspace_vaddr_range(vaddr: Vaddr, len: usize) -> bool {
+pub(crate) fn is_userspace_vaddr_range(vaddr: Vaddr, len: usize) -> bool {
     vaddr >= VMAR_LOWEST_ADDR
         && VMAR_CAP_ADDR
             .checked_sub(vaddr)

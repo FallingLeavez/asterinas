@@ -5,6 +5,15 @@ use ostd::{mm::vm_space::VmQueriedItem, task::disable_preempt};
 use super::{RssDelta, Vmar, util::is_intersected};
 use crate::{prelude::*, vm::vmar::is_userspace_vaddr_range};
 
+/// Controls how the old mapping is handled during a `remap` operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemapOldMappingAction {
+    /// Remove the old mapping after moving pages.
+    Unmap,
+    /// Keep the old address range mapped as anonymous zero-fill-on-demand.
+    Keep,
+}
+
 impl Vmar {
     /// Resizes the original mapping.
     ///
@@ -59,9 +68,17 @@ impl Vmar {
     /// - If `new_addr` is `None`, a new range of size `new_size` will be
     ///   allocated, and the original mapping will be moved there.
     ///
+    /// When `action` is [`RemapOldMappingAction::Keep`], the old mapping is
+    /// kept as an anonymous zero-fill-on-demand mapping after the pages have
+    /// been moved to the new address.  In this case `new_size` must equal
+    /// `old_size`.  If `new_addr` is `None`, the kernel automatically allocates
+    /// a new address range; otherwise, the mapping is moved to `new_addr`
+    /// as with `MREMAP_FIXED`.
+    ///
     /// # Panics
     ///
-    /// This method panics if `new_addr` is `None` and `new_size <= old_size`.
+    /// This method panics if `new_addr` is `None` and `new_size <= old_size`
+    /// (unless `action` is [`RemapOldMappingAction::Keep`]).
     /// Use `resize_mapping` instead in this case.
     pub fn remap(
         &self,
@@ -69,6 +86,7 @@ impl Vmar {
         old_size: usize,
         new_addr: Option<Vaddr>,
         new_size: usize,
+        action: RemapOldMappingAction,
     ) -> Result<Vaddr> {
         debug_assert_eq!(old_addr % PAGE_SIZE, 0);
         debug_assert_eq!(old_size % PAGE_SIZE, 0);
@@ -131,10 +149,13 @@ impl Vmar {
                 &mut rss_delta,
             )?
         } else {
-            debug_assert!(new_size > old_size);
+            debug_assert!(new_size > old_size || action == RemapOldMappingAction::Keep);
 
-            // Fast path: expand the old mapping in place to the new size
-            if is_userspace_vaddr_range(old_addr, new_size)
+            // Fast path: expand the old mapping in place to the new size.
+            // Skip when `action` is `Keep` since we must actually move pages
+            // and keep the old mapping as anonymous.
+            if action == RemapOldMappingAction::Unmap
+                && is_userspace_vaddr_range(old_addr, new_size)
                 && inner
                     .alloc_free_region_exact(old_range.end, new_size - old_size)
                     .is_ok()
@@ -149,22 +170,32 @@ impl Vmar {
             inner.alloc_free_region(new_size, PAGE_SIZE)?
         };
 
-        // Create a new `VmMapping`.
-        let old_mapping = {
+        // Create a new `VmMapping` at the target address.
+        if action == RemapOldMappingAction::Keep {
+            // MREMAP_DONTUNMAP: old mapping stays in the tree with its original
+            // properties.  Clone it for the new address and insert the clone.
             let old_mapping_addr = inner.check_lies_in_single_mapping(old_addr, old_size)?;
-            let vm_mapping = inner.remove(&old_mapping_addr).unwrap();
-            let (left, old_mapping, right) = vm_mapping.split_range(&old_range);
-            if let Some(left) = left {
-                inner.insert_without_try_merge(left);
-            }
-            if let Some(right) = right {
-                inner.insert_without_try_merge(right);
-            }
-            old_mapping
-        };
-        // Note that we have ensured that `new_size >= old_size` at the beginning.
-        let new_mapping = old_mapping.clone_for_remap_at(new_range.start);
-        inner.insert_try_merge(new_mapping.enlarge(new_size - old_size));
+            let old_ref = inner.vm_mappings.find_one(&old_mapping_addr).unwrap();
+            let new_mapping = old_ref.clone_for_remap_at(new_range.start);
+            inner.insert_try_merge(new_mapping.enlarge(new_size - old_size));
+        } else {
+            // Normal remap: remove the old mapping, split it, and move the middle
+            // portion to the new address.
+            let old_mapping = {
+                let old_mapping_addr = inner.check_lies_in_single_mapping(old_addr, old_size)?;
+                let vm_mapping = inner.remove(&old_mapping_addr).unwrap();
+                let (left, old_mapping, right) = vm_mapping.split_range(&old_range);
+                if let Some(left) = left {
+                    inner.insert_without_try_merge(left);
+                }
+                if let Some(right) = right {
+                    inner.insert_without_try_merge(right);
+                }
+                old_mapping
+            };
+            let new_mapping = old_mapping.clone_for_remap_at(new_range.start);
+            inner.insert_try_merge(new_mapping.enlarge(new_size - old_size));
+        }
 
         let preempt_guard = disable_preempt();
         let total_range = old_range.start.min(new_range.start)..old_range.end.max(new_range.end);
@@ -211,6 +242,14 @@ impl Vmar {
 
         cursor.flusher().dispatch_tlb_flush();
         cursor.flusher().sync_tlb_flush();
+
+        // For Unmap: old_mapping was removed from the tree earlier and has no
+        // references.  For Keep (MREMAP_DONTUNMAP): the old mapping remains in
+        // the tree; its physical pages are gone, but its VmMapping retains the
+        // original file-backing, permissions, and flags.  Subsequent page faults
+        // at `old_addr` will be handled by the existing VmMapping (anonymous
+        // mappings get zero-filled pages, file-backed mappings read from the
+        // page cache).
 
         Ok(new_range.start)
     }

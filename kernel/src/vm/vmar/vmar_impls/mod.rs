@@ -7,6 +7,7 @@ pub(super) mod page_fault;
 mod protect;
 mod query;
 mod remap;
+pub use remap::RemapOldMappingAction;
 mod unmap;
 
 use core::{

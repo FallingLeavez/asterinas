@@ -6,6 +6,15 @@ mremap(
     flags = MREMAP_MAYMOVE
 );
 
+// Relocate an existing memory mapping while keeping the old mapping
+// as anonymous zero-fill-on-demand.
+mremap(
+    old_address,
+    old_size,
+    new_size,
+    flags = MREMAP_MAYMOVE | MREMAP_DONTUNMAP
+);
+
 // Resize an existing memory mapping and force relocation to a specified location.
 mremap(
     old_address,

@@ -205,3 +205,78 @@ FN_TEST(mremap_may_fail_after_unmap)
 	TEST_SUCC(munmap(addr, 5 * PAGE_SIZE));
 }
 END_TEST()
+
+FN_TEST(mremap_dontunmap)
+{
+	char *old_addr = TEST_SUCC(mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+	strcpy(old_addr, "hello");
+
+	// MREMAP_DONTUNMAP without MREMAP_MAYMOVE should fail.
+	TEST_ERRNO(mremap(old_addr, PAGE_SIZE, PAGE_SIZE, MREMAP_DONTUNMAP, 0),
+		   EINVAL);
+
+	// MREMAP_DONTUNMAP with a different size should fail.
+	TEST_ERRNO(mremap(old_addr, PAGE_SIZE, 2 * PAGE_SIZE,
+			  MREMAP_MAYMOVE | MREMAP_DONTUNMAP, 0),
+		   EINVAL);
+
+	// Basic MREMAP_MAYMOVE | MREMAP_DONTUNMAP: move pages, keep old
+	// mapping as anonymous zero-fill-on-demand.
+	char *new_addr =
+		TEST_SUCC(mremap(old_addr, PAGE_SIZE, PAGE_SIZE,
+				 MREMAP_MAYMOVE | MREMAP_DONTUNMAP, 0));
+	TEST_RES(strcmp(new_addr, "hello"), _ret == 0);
+
+	// The old address is still mapped (not SIGSEGV).
+	// It should read as zero (anonymous zero-fill-on-demand).
+	TEST_RES(old_addr[0], _ret == '\0');
+	TEST_RES(old_addr[1], _ret == '\0');
+
+	// MREMAP_DONTUNMAP | MREMAP_FIXED: move to a specific address,
+	// keep the old mapping.
+	char *target = TEST_SUCC(mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+				      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+	TEST_SUCC(munmap(target, PAGE_SIZE));
+	strcpy(new_addr, "fixed");
+	char *fixed_new = TEST_SUCC(mremap(
+		new_addr, PAGE_SIZE, PAGE_SIZE,
+		MREMAP_MAYMOVE | MREMAP_DONTUNMAP | MREMAP_FIXED, target));
+	TEST_RES(fixed_new == target, _ret == 1);
+	TEST_RES(strcmp(fixed_new, "fixed"), _ret == 0);
+
+	TEST_SUCC(munmap(old_addr, PAGE_SIZE));
+	TEST_SUCC(munmap(fixed_new, PAGE_SIZE));
+}
+END_TEST()
+
+FN_TEST(mremap_dontunmap_file_backed)
+{
+	const char *filename = "mremap_dontunmap_file";
+	int fd = TEST_SUCC(open(filename, O_CREAT | O_RDWR, 0600));
+	TEST_SUCC(ftruncate(fd, PAGE_SIZE));
+	TEST_SUCC(write(fd, "filecontent", 11));
+
+	// Map the file as a private mapping.
+	char *addr = TEST_SUCC(mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+				    MAP_PRIVATE, fd, 0));
+	TEST_SUCC(close(fd));
+
+	// File-backed DONTUNMAP: move pages, keep old file-backed mapping.
+	char *new_addr =
+		TEST_SUCC(mremap(addr, PAGE_SIZE, PAGE_SIZE,
+				 MREMAP_MAYMOVE | MREMAP_DONTUNMAP, 0));
+	TEST_RES(strcmp(new_addr, "filecontent"), _ret == 0);
+
+	// The old address is still a file-backed mapping (not anonymous).
+	// Accessing it reads from the file's page cache.
+	char buf[12] = {};
+	memcpy(buf, addr, 11);
+	buf[11] = '\0';
+	TEST_RES(strcmp(buf, "filecontent"), _ret == 0);
+
+	TEST_SUCC(munmap(addr, PAGE_SIZE));
+	TEST_SUCC(munmap(new_addr, PAGE_SIZE));
+	TEST_SUCC(unlink(filename));
+}
+END_TEST()
