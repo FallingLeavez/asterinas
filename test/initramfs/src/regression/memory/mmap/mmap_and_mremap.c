@@ -250,7 +250,7 @@ FN_TEST(mremap_dontunmap)
 }
 END_TEST()
 
-FN_TEST(mremap_dontunmap_file_backed)
+FN_TEST(mremap_dontunmap_file_backed_is_rejected)
 {
 	const char *filename = "mremap_dontunmap_file";
 	int fd = TEST_SUCC(open(filename, O_CREAT | O_RDWR, 0600));
@@ -262,21 +262,13 @@ FN_TEST(mremap_dontunmap_file_backed)
 				    MAP_PRIVATE, fd, 0));
 	TEST_SUCC(close(fd));
 
-	// File-backed DONTUNMAP: move pages, keep old file-backed mapping.
-	char *new_addr =
-		TEST_SUCC(mremap(addr, PAGE_SIZE, PAGE_SIZE,
-				 MREMAP_MAYMOVE | MREMAP_DONTUNMAP, 0));
-	TEST_RES(strcmp(new_addr, "filecontent"), _ret == 0);
-
-	// The old address is still a file-backed mapping (not anonymous).
-	// Accessing it reads from the file's page cache.
-	char buf[12] = {};
-	memcpy(buf, addr, 11);
-	buf[11] = '\0';
-	TEST_RES(strcmp(buf, "filecontent"), _ret == 0);
+	// Asterinas currently supports MREMAP_DONTUNMAP only for private
+	// anonymous mappings.
+	TEST_ERRNO(mremap(addr, PAGE_SIZE, PAGE_SIZE,
+			  MREMAP_MAYMOVE | MREMAP_DONTUNMAP, 0),
+		   EINVAL);
 
 	TEST_SUCC(munmap(addr, PAGE_SIZE));
-	TEST_SUCC(munmap(new_addr, PAGE_SIZE));
 	TEST_SUCC(unlink(filename));
 }
 END_TEST()

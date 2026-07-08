@@ -173,16 +173,24 @@ impl Vmar {
         // Create a new `VmMapping` at the target address.
         if action == RemapOldMappingAction::Keep {
             // MREMAP_DONTUNMAP: old mapping stays in the tree with its original
-            // properties.  Clone it for the new address and insert the clone.
+            // private-anonymous properties. Clone it for the new address and
+            // insert the clone. The physical pages are moved below; later
+            // accesses to the old range fault in zero-filled pages.
             let old_mapping_addr = inner.check_lies_in_single_mapping(old_addr, old_size)?;
             let old_ref = inner.vm_mappings.find_one(&old_mapping_addr).unwrap();
+            if !old_ref.is_private_anonymous() {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "remap: `MREMAP_DONTUNMAP` requires a private anonymous mapping"
+                );
+            }
             let new_mapping = old_ref.clone_for_remap_at(new_range.start);
             inner.insert_try_merge(new_mapping.enlarge(new_size - old_size));
         } else {
             // Normal remap: remove the old mapping, split it, and move the middle
             // portion to the new address.
+            let old_mapping_addr = inner.check_lies_in_single_mapping(old_addr, old_size)?;
             let old_mapping = {
-                let old_mapping_addr = inner.check_lies_in_single_mapping(old_addr, old_size)?;
                 let vm_mapping = inner.remove(&old_mapping_addr).unwrap();
                 let (left, old_mapping, right) = vm_mapping.split_range(&old_range);
                 if let Some(left) = left {
@@ -244,12 +252,9 @@ impl Vmar {
         cursor.flusher().sync_tlb_flush();
 
         // For Unmap: old_mapping was removed from the tree earlier and has no
-        // references.  For Keep (MREMAP_DONTUNMAP): the old mapping remains in
-        // the tree; its physical pages are gone, but its VmMapping retains the
-        // original file-backing, permissions, and flags.  Subsequent page faults
-        // at `old_addr` will be handled by the existing VmMapping (anonymous
-        // mappings get zero-filled pages, file-backed mappings read from the
-        // page cache).
+        // references. For Keep (MREMAP_DONTUNMAP): the old private-anonymous
+        // mapping remains in the tree. Its physical pages are gone, so later
+        // page faults allocate zero-filled pages.
 
         Ok(new_range.start)
     }

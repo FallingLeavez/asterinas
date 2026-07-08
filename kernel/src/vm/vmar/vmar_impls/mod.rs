@@ -241,7 +241,11 @@ impl VmarInner {
         let mut vm_mapping = vm_mapping;
         let addr = vm_mapping.map_to_addr();
 
-        if let Some(prev) = self.vm_mappings.find_prev(&addr) {
+        if let Some(prev) = self
+            .vm_mappings
+            .find_prev(&addr)
+            .filter(|prev| !util::is_intersected(&vm_mapping.range(), &prev.range()))
+        {
             let (new_mapping, to_remove) = vm_mapping.try_merge_with(prev);
             vm_mapping = new_mapping;
             if let Some(addr) = to_remove {
@@ -249,7 +253,11 @@ impl VmarInner {
             }
         }
 
-        if let Some(next) = self.vm_mappings.find_next(&addr) {
+        if let Some(next) = self
+            .vm_mappings
+            .find_next(&addr)
+            .filter(|next| !util::is_intersected(&vm_mapping.range(), &next.range()))
+        {
             let (new_mapping, to_remove) = vm_mapping.try_merge_with(next);
             vm_mapping = new_mapping;
             if let Some(addr) = to_remove {

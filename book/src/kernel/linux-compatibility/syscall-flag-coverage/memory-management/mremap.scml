@@ -6,8 +6,8 @@ mremap(
     flags = MREMAP_MAYMOVE
 );
 
-// Relocate an existing memory mapping while keeping the old mapping
-// as anonymous zero-fill-on-demand.
+// Relocate an existing private anonymous memory mapping while keeping the old
+// mapping as anonymous zero-fill-on-demand.
 mremap(
     old_address,
     old_size,

@@ -201,6 +201,11 @@ impl VmMapping {
         !matches!(self.mapped_mem, MappedMemory::Device)
     }
 
+    /// Returns whether this is a private anonymous mapping.
+    pub(super) fn is_private_anonymous(&self) -> bool {
+        matches!(self.mapped_mem, MappedMemory::Anonymous) && !self.is_shared
+    }
+
     /// Populates device memory for this mapping.
     ///
     /// This method should only be called for device memory mappings. It maps
