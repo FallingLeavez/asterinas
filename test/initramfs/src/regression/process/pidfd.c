@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <signal.h>
 
+#define P_PIDFD 3
+
 static int child_pid;
 static int pid_fd;
 
@@ -77,14 +79,13 @@ FN_TEST(poll)
 	TEST_RES(poll(&pfd, 1, 0), pfd.revents == 0);
 
 	TEST_SUCC(kill(child_pid, SIGKILL));
-	sleep(1);
+	TEST_SUCC(waitid(P_PIDFD, pid_fd, NULL, WEXITED | WNOWAIT));
 	TEST_RES(poll(&pfd, 1, 0), pfd.revents == POLLIN);
 }
 END_TEST()
 
 FN_TEST(wait)
 {
-#define P_PIDFD 3
 	TEST_SUCC(waitid(P_PIDFD, pid_fd, NULL, WEXITED | WNOWAIT));
 	TEST_RES(poll(&pfd, 1, 0), pfd.revents == POLLIN);
 	TEST_SUCC(waitid(P_PIDFD, pid_fd, NULL, WEXITED));
