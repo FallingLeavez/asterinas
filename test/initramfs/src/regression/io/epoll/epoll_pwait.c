@@ -8,10 +8,13 @@
 #include <sys/wait.h>
 #include <string.h>
 
+static volatile sig_atomic_t sigusr1_received;
+
 // Signal handler for SIGUSR1
 static void handle_sigusr1(int sig)
 {
-	(void)!write(STDOUT_FILENO, "SIGUSR1 handled\n", 16);
+	(void)sig;
+	sigusr1_received = 1;
 }
 
 int main(void)
@@ -34,7 +37,17 @@ int main(void)
 		exit(EXIT_FAILURE);
 	}
 
-	// Fork to create child process
+	// Block SIGUSR1 before the child sends it. This makes the signal pending
+	// until after epoll_pwait has returned.
+	sigset_t sigusr1_mask, old_mask;
+	sigemptyset(&sigusr1_mask);
+	sigaddset(&sigusr1_mask, SIGUSR1);
+	if (sigprocmask(SIG_BLOCK, &sigusr1_mask, &old_mask) == -1) {
+		perror("sigprocmask error");
+		exit(EXIT_FAILURE);
+	}
+
+	// Fork to create a child that sends the signal before making the pipe ready.
 	cpid = fork();
 	if (cpid == -1) {
 		perror("fork error");
@@ -44,7 +57,10 @@ int main(void)
 	if (cpid == 0) { // Child process
 		close(pipefd[0]); // Child closes read end of the pipe
 
-		sleep(3); // Sleep for several seconds to provide a time window to send SIGUSR1
+		if (kill(getppid(), SIGUSR1) == -1) {
+			perror("kill error");
+			_exit(EXIT_FAILURE);
+		}
 
 		const char *message = "Message from child process\n";
 		(void)!write(pipefd[1], message,
@@ -54,7 +70,6 @@ int main(void)
 	} else {
 		// Parent process
 		struct sigaction sa;
-		sigset_t sigset;
 
 		// Setup signal handler for SIGUSR1
 		sa.sa_handler = handle_sigusr1;
@@ -64,10 +79,6 @@ int main(void)
 			perror("sigaction error");
 			exit(EXIT_FAILURE);
 		}
-
-		// Prepare the signal set to block SIGUSR1
-		sigemptyset(&sigset);
-		sigaddset(&sigset, SIGUSR1);
 
 		close(pipefd[1]); // Parent closes write end of the pipe
 
@@ -79,11 +90,15 @@ int main(void)
 			exit(EXIT_FAILURE);
 		}
 
-		// Wait for events to occur, blocking SIGUSR1
-		printf("Waiting for event on pipe, SIGUSR1 is blocked...\n");
-		nfds = epoll_pwait(epfd, events, 1, -1, &sigset);
+		// SIGUSR1 was sent before the pipe became ready. It must remain blocked
+		// while epoll_pwait waits for that pipe event.
+		nfds = epoll_pwait(epfd, events, 1, 10000, &sigusr1_mask);
 		if (nfds == -1) {
 			perror("epoll_pwait error");
+			exit(EXIT_FAILURE);
+		}
+		if (nfds == 0) {
+			fprintf(stderr, "epoll_pwait timed out\n");
 			exit(EXIT_FAILURE);
 		}
 
@@ -105,7 +120,21 @@ int main(void)
 	}
 
 	// Wait for the child process to complete
-	wait(NULL);
+	int status;
+	if (waitpid(cpid, &status, 0) != cpid || !WIFEXITED(status) ||
+	    WEXITSTATUS(status) != EXIT_SUCCESS) {
+		fprintf(stderr, "child did not exit successfully\n");
+		exit(EXIT_FAILURE);
+	}
+
+	if (sigprocmask(SIG_SETMASK, &old_mask, NULL) == -1) {
+		perror("sigprocmask error");
+		exit(EXIT_FAILURE);
+	}
+	if (!sigusr1_received) {
+		fprintf(stderr, "SIGUSR1 was not delivered\n");
+		exit(EXIT_FAILURE);
+	}
 
 	return EXIT_SUCCESS;
 }
