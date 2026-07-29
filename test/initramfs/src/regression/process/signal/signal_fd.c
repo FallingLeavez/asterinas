@@ -47,30 +47,59 @@ void signal_handler(int signum, siginfo_t *info, void *ucontext)
 FN_TEST(ignored_signal_does_not_interrupt)
 {
 	int pipefds[2];
+	int ready_pipefds[2];
+	int stage_pipefds[2];
 	TEST_SUCC(pipe(pipefds));
+	TEST_SUCC(pipe(ready_pipefds));
+	TEST_SUCC(pipe(stage_pipefds));
 
 	pid_t pid = TEST_SUCC(fork());
 	if (pid == 0) {
+		TEST_SUCC(close(ready_pipefds[0]));
+		TEST_SUCC(close(stage_pipefds[0]));
 		CHECK(signal(SIGUSR1, SIG_IGN));
 		struct sigaction sa;
 		sa.sa_sigaction = signal_handler;
 		sa.sa_flags = SA_SIGINFO;
 		CHECK(sigaction(SIGUSR2, &sa, NULL));
-		CHECK(sigprocmask(SIG_UNBLOCK, &mask, NULL));
 
 		CHECK(close(pipefds[1]));
+		CHECK(write(ready_pipefds[1], "x", 1));
+		CHECK(close(ready_pipefds[1]));
+
+		struct pollfd pollfd = {
+			.fd = pipefds[0],
+			.events = POLLIN,
+		};
+		sigset_t empty_mask;
+		sigemptyset(&empty_mask);
+		const struct timespec poll_timeout = {
+			.tv_sec = 10,
+		};
+		TEST_ERRNO(ppoll(&pollfd, 1, &poll_timeout, &empty_mask), EINTR);
+		CHECK(write(stage_pipefds[1], "x", 1));
+		CHECK(close(stage_pipefds[1]));
+
+		pollfd.revents = 0;
+		TEST_RES(ppoll(&pollfd, 1, &poll_timeout, &empty_mask),
+			 pollfd.revents == POLLIN);
 		char buf[1];
-		CHECK_WITH(read(pipefds[0], buf, sizeof(buf)), errno == EINTR);
-		CHECK_WITH(read(pipefds[0], buf, sizeof(buf)), buf[0] == 'a');
+		TEST_RES(read(pipefds[0], buf, sizeof(buf)),
+			 _ret == 1 && buf[0] == 'a');
 		exit(101);
 	};
 
 	TEST_SUCC(close(pipefds[0]));
-	sleep(1);
+	TEST_SUCC(close(ready_pipefds[1]));
+	TEST_SUCC(close(stage_pipefds[1]));
+	char ready;
+	TEST_RES(read(ready_pipefds[0], &ready, sizeof(ready)), _ret == 1);
+	TEST_SUCC(close(ready_pipefds[0]));
 	TEST_SUCC(kill(pid, SIGUSR2));
-	sleep(1);
+	char stage;
+	TEST_RES(read(stage_pipefds[0], &stage, sizeof(stage)), _ret == 1);
+	TEST_SUCC(close(stage_pipefds[0]));
 	TEST_SUCC(kill(pid, SIGUSR1));
-	sleep(1);
 	char buf[1] = { 'a' };
 	TEST_SUCC(write(pipefds[1], buf, sizeof(buf)));
 
