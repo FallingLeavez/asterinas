@@ -327,6 +327,7 @@ macro_rules! impl_syscall_nums_and_dispatch_fn {
             ctx: &crate::context::Context,
             user_ctx: &mut ostd::arch::cpu::context::UserContext,
         ) -> $crate::prelude::Result<$crate::syscall::SyscallReturn> {
+            $crate::extension::syscall_observer::observe(syscall_number, args, ctx);
             match syscall_number {
                 $(
                     $num => {

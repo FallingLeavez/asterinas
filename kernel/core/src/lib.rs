@@ -45,6 +45,7 @@ mod device;
 mod driver;
 mod error;
 mod events;
+mod extension;
 mod fs;
 mod init;
 mod ipc;
